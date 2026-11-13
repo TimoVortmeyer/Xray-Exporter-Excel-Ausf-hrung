@@ -1,0 +1,11 @@
+{
+    "JiraBaseUrl": "https://jira.example.invalid",
+    "Proxy": {
+        "Mode": "System",
+        "Url": "",
+        "UseDefaultCredentials": true
+    },
+    "Xray": {
+        "ApiPath": "/rest/raven/1.0/api"
+    }
+}

@@ -1,0 +1,7 @@
+{
+    "DEMO": {
+        "confirmed": false,
+        "test": ["TODO", "Executing", "PASS", "PASS_Restricted", "FAIL", "ABORTED"],
+        "step": ["TODO", "EXECUTING", "PASS", "PASS_Restricted", "FAIL", "ABORTED", "IRRELEVANT"]
+    }
+}
