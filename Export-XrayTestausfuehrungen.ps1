@@ -148,7 +148,10 @@ function Get-TestRunSharePointLink {
             return $true
         })
     }
-    if ($Unique.Count -gt 1) { throw "Mehrere SharePoint-Dateien passen zu den Kommentaren von $TestKey." }
+    if ($Unique.Count -gt 1) {
+        Write-Warning "Mehrere SharePoint-Dateien passen zu den Kommentaren von $TestKey. Statt eines Links wird die Testfallbeschreibung verwendet."
+        return ''
+    }
     if (-not $Unique.Count) {
         Write-Warning "Kein SharePoint-Link fuer $TestKey gefunden (Kommentarname: $($Candidates -join ', '))."
         return ''
