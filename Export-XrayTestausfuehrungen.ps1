@@ -13,7 +13,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $RunLibraryOnly = $LibraryOnly
-$RunIssueKeys = @($IssueKeys)
+$RunIssueKeys = @($IssueKeys | Where-Object { $null -ne $_ })
 $RunFilterUrl = $FilterUrl
 $RunConfigPath = $ConfigPath
 $RunOutputPath = $OutputPath
@@ -68,6 +68,20 @@ function Get-TestRunReferences {
         if ($Keys -notcontains $Key) { $Keys.Add($Key) }
     }
     return ,@($Keys)
+}
+
+function Get-TestRunExecutionTests {
+    param([string]$ExecutionKey)
+    $PageSize = 200
+    $PageNumber = 1
+    $TestKeys = [System.Collections.Generic.List[string]]::new()
+    do {
+        $Path = "$script:ExportApiPath/testexec/$ExecutionKey/test?limit=$PageSize&page=$PageNumber"
+        $Page = Get-TestRunReferences (Invoke-ExportRequest $Path) "$ExecutionKey (Seite $PageNumber)"
+        foreach ($TestKey in $Page) { $TestKeys.Add($TestKey) }
+        $PageNumber++
+    } while ($Page.Count -eq $PageSize)
+    return ,$TestKeys.ToArray()
 }
 
 function Get-TestRunExecutions {
@@ -177,17 +191,17 @@ function Add-TestRunValidation {
 }
 
 function New-TestRunWorkbook {
-    param([object]$Excel, [object]$Execution, [string[]]$Statuses, [object[]]$Files, [string]$Destination)
+    param([object]$Excel, [object]$Execution, [string[]]$Statuses, [object[]]$Files, [string]$Destination, [string[]]$Tests, [hashtable]$ProgressState)
     $Workbook = $Excel.Workbooks.Add()
     $Sheet = $Workbook.Worksheets.Item(1)
     $Sheet.Name = 'Testergebnis'
-    $Headers = @(('Schl{0}ssel' -f [char]0x00fc), 'Testfallbezeichnung', 'Link Testfallbeschreibung', 'Tester', 'Status', 'Anmerkung')
+    $Headers = @(('Schl{0}ssel' -f [char]0x00fc), 'Testfallbezeichnung', 'Beschreibung / Link Word-Testdokumentation', 'Tester', 'Status', 'Anmerkung')
     for ($Column = 0; $Column -lt $Headers.Count; $Column++) { $Sheet.Cells.Item(1, $Column + 1).Value2 = $Headers[$Column] }
     $Sheet.Cells.Item(1, 7).Value2 = 'Statusindex'
     $Sheet.Columns.Item(7).Hidden = $true
     $Sheet.Columns.Item(1).ColumnWidth = 16
     $Sheet.Columns.Item(2).ColumnWidth = 48
-    $Sheet.Columns.Item(3).ColumnWidth = 27
+    $Sheet.Columns.Item(3).ColumnWidth = 50
     $Sheet.Columns.Item(4).ColumnWidth = 22
     $Sheet.Columns.Item(5).ColumnWidth = 30
     $Sheet.Columns.Item(6).ColumnWidth = 52
@@ -199,15 +213,15 @@ function New-TestRunWorkbook {
     $Header.RowHeight = 32
     $Sheet.Application.ActiveWindow.SplitRow = 1
     $Sheet.Application.ActiveWindow.FreezePanes = $true
-    $Tests = Get-TestRunReferences (Invoke-ExportRequest "$script:ExportApiPath/testexec/$($Execution.key)/test") $Execution.key
     if (-not $Tests.Count) { throw "$($Execution.key) enthaelt keine Testfaelle." }
     $TodoIndex = 0
     for ($StatusIndex = 0; $StatusIndex -lt $Statuses.Count; $StatusIndex++) {
         if ($Statuses[$StatusIndex] -ieq 'TODO') { $TodoIndex = $StatusIndex + 1; break }
     }
     $Row = 2
+    if (-not $ProgressState.Stopwatch.IsRunning) { $ProgressState.Stopwatch.Start() }
     foreach ($TestKey in $Tests) {
-        $Issue = Invoke-ExportRequest "/rest/api/2/issue/${TestKey}?fields=summary,issuetype,comment"
+        $Issue = Invoke-ExportRequest "/rest/api/2/issue/${TestKey}?fields=summary,issuetype,comment,description"
         if ([string]$Issue.fields.issuetype.name -ine 'Test') { throw "$TestKey ist kein Xray-Testfall (Issue-Typ: $($Issue.fields.issuetype.name))." }
         $Sheet.Cells.Item($Row, 1).Value2 = $TestKey
         $Sheet.Cells.Item($Row, 2).Value2 = [string]$Issue.fields.summary
@@ -217,7 +231,7 @@ function New-TestRunWorkbook {
             $LinkText = 'Dokument {0}ffnen' -f [char]0x00f6
             $Sheet.Hyperlinks.Add($Sheet.Cells.Item($Row, 3), $Link, '', $ScreenTip, $LinkText) | Out-Null
         }
-        else { $Sheet.Cells.Item($Row, 3).Value2 = 'Kein Link gefunden' }
+        else { $Sheet.Cells.Item($Row, 3).Value2 = [string]$Issue.fields.description }
         $Sheet.Cells.Item($Row, 4).Locked = $false
         $Sheet.Cells.Item($Row, 6).Locked = $false
         $Sheet.Cells.Item($Row, 7).Locked = $false
@@ -226,7 +240,10 @@ function New-TestRunWorkbook {
         $Sheet.Rows.Item($Row).RowHeight = $RowHeight
         $Sheet.Cells.Item($Row, 1).NumberFormat = '@'
         $Sheet.Cells.Item($Row, 4).WrapText = $true
+        $Sheet.Cells.Item($Row, 3).WrapText = $true
         $Sheet.Cells.Item($Row, 6).WrapText = $true
+        $Sheet.Rows.Item($Row).AutoFit()
+        if ($Sheet.Rows.Item($Row).RowHeight -lt $RowHeight) { $Sheet.Rows.Item($Row).RowHeight = $RowHeight }
         $Sheet.Range("A${Row}:F${Row}").VerticalAlignment = -4160
         $Sheet.Range("A${Row}:F${Row}").Interior.Color = ConvertTo-TestRunRgb '#F5F5F6'
         $Top = [double]$Sheet.Cells.Item($Row, 5).Top + 1
@@ -259,6 +276,13 @@ function New-TestRunWorkbook {
         Add-TestRunValidation $Sheet.Cells.Item($Row, 4) 100
         Add-TestRunValidation $Sheet.Cells.Item($Row, 6) 1000
         $Row++
+        $ProgressState.Completed++
+        $PercentComplete = [Math]::Min(99, [int][Math]::Floor(100 * $ProgressState.Completed / $ProgressState.Total))
+        $AverageSeconds = $ProgressState.Stopwatch.Elapsed.TotalSeconds / $ProgressState.Completed
+        $RemainingSeconds = $AverageSeconds * ($ProgressState.Total - $ProgressState.Completed)
+        $ExpectedEndTime = (Get-Date).AddSeconds($RemainingSeconds).ToString('HH:mm:ss')
+        $ProgressStatus = '{0}/{1} Testfaelle; voraussichtliches Ende: {2}' -f $ProgressState.Completed, $ProgressState.Total, $ExpectedEndTime
+        Write-Progress -Activity 'Xray-Export' -Status $ProgressStatus -PercentComplete $PercentComplete
     }
     $Sheet.Range("A1:F$($Row - 1)").Borders.LineStyle = 1
     $Sheet.Protect('', $false, $true, $true, $true)
@@ -297,6 +321,24 @@ try {
     if ($FilterSelection) { $InputKeys += @(Get-ExportFilterKeys $FilterSelection) }
     $InputKeys = @($InputKeys | Select-Object -Unique)
     $Executions = Get-TestRunExecutions $InputKeys
+    $ExecutionTests = @{}
+    $TotalTests = 0
+    for ($ExecutionIndex = 0; $ExecutionIndex -lt $Executions.Count; $ExecutionIndex++) {
+        $Execution = $Executions[$ExecutionIndex]
+        $ExecutionKey = [string]$Execution.key
+        $PercentComplete = [int][Math]::Floor(100 * $ExecutionIndex / $Executions.Count)
+        $ProgressStatus = 'Ermittle Testfaelle fuer Ausfuehrung {0} von {1}' -f ($ExecutionIndex + 1), $Executions.Count
+        Write-Progress -Activity 'Xray-Export' -Status $ProgressStatus -PercentComplete $PercentComplete
+        $Tests = Get-TestRunExecutionTests $ExecutionKey
+        if (-not $Tests.Count) { throw "$ExecutionKey enthaelt keine Testfaelle." }
+        $ExecutionTests[$ExecutionKey] = @($Tests)
+        $TotalTests += $Tests.Count
+    }
+    $ProgressState = @{
+        Total = $TotalTests
+        Completed = 0
+        Stopwatch = [Diagnostics.Stopwatch]::new()
+    }
     $ConfiguredStatuses = $null
     if ($StatusConfigPath) { $ConfiguredStatuses = Get-Content -LiteralPath $StatusConfigPath -Raw -Encoding UTF8 | ConvertFrom-Json }
     $LiveStatuses = $null
@@ -326,14 +368,16 @@ try {
         $Name = ConvertTo-ExportFileName ([string]$Execution.fields.summary) $ExecutionKey
         $Destination = Join-Path $OutputPath ($ExecutionKey + ' - ' + $Name + '.xlsx')
         Write-Host "Erstelle $Destination ..."
-        try { New-TestRunWorkbook $Excel $Execution $Statuses $Files $Destination }
+        try { New-TestRunWorkbook $Excel $Execution $Statuses $Files $Destination $ExecutionTests[$ExecutionKey] $ProgressState }
         catch [Runtime.InteropServices.COMException] {
             throw "Excel hat die Automatisierung abgelehnt. Bitte Excel-Dialoge schliessen und den Export erneut starten. Details: $($_.Exception.Message)"
         }
     }
+    Write-Progress -Activity 'Xray-Export' -Status 'Export abgeschlossen' -PercentComplete 100
     Write-Host "Fertig: $($Executions.Count) Excel-Datei(en) in $OutputPath"
 }
 finally {
+    Write-Progress -Activity 'Xray-Export' -Completed
     try { if ($Excel) { $Excel.Quit() } } catch {}
     try { if ($Workbooks) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($Workbooks) } } catch {}
     try { if ($Excel) { [void][Runtime.InteropServices.Marshal]::ReleaseComObject($Excel) } } catch {}

@@ -84,8 +84,29 @@ function Invoke-ExportRequest {
     }
     catch {
         $StatusCode = 'unbekannt'
-        if ($_.Exception.Response) { $StatusCode = [string][int]$_.Exception.Response.StatusCode }
-        throw "Jira-Abfrage fehlgeschlagen (HTTP $StatusCode): $($Target.AbsolutePath). Keine Datei erstellt."
+        $ResponseBody = ''
+        $HttpResponse = $_.Exception.Response
+        if ($HttpResponse) {
+            try {
+                $StatusCode = [string][int]$HttpResponse.StatusCode
+                if ($HttpResponse -is [System.Net.HttpWebResponse]) {
+                    $ResponseStream = $HttpResponse.GetResponseStream()
+                    if ($ResponseStream) {
+                        $Reader = [System.IO.StreamReader]::new($ResponseStream)
+                        try { $ResponseBody = $Reader.ReadToEnd() } finally { $Reader.Dispose() }
+                    }
+                }
+                elseif ($HttpResponse.Content) {
+                    $ResponseBody = $HttpResponse.Content.ReadAsStringAsync().GetAwaiter().GetResult()
+                }
+            }
+            catch {}
+        }
+        if (-not $ResponseBody) { $ResponseBody = [string]$_.ErrorDetails.Message }
+        $ResponseBody = ($ResponseBody -replace '\s+', ' ').Trim()
+        if ($ResponseBody.Length -gt 500) { $ResponseBody = $ResponseBody.Substring(0, 500) + '...' }
+        $Details = if ($ResponseBody) { " Antwort: $ResponseBody." } else { '' }
+        throw "Jira-Abfrage fehlgeschlagen (HTTP $StatusCode): $($Target.AbsolutePath).$Details Keine Datei erstellt."
     }
 }
 
